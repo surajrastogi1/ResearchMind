@@ -1,10 +1,15 @@
-from fastapi import FastAPI,HTTPException,Depends,status
+from fastapi import FastAPI,HTTPException,Depends,File,UploadFile
 from sqlmodel import SQLModel,create_engine,Field,Session,select
 from pydantic import EmailStr
 from datetime import datetime,timedelta,timezone
 from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 import bcrypt
 import jwt
+import os
+
+upload_dir = "uploads"
+os.makedirs(upload_dir,exist_ok=True)
+
 
 SECRET_KEY = "my_super_secret_key_for_researchmind_ai"
 ALGORITHM = "HS256"
@@ -241,3 +246,42 @@ def delete_project(
     return {
         "message" : f"Project {project.name} has been successfully deleted"
     }
+
+@app.post("/projects/{project_id}/upload")
+def upload_pdf(
+    project_id : int,
+    file : UploadFile = File(...),
+    session : Session = Depends(get_session),
+    current_user : User = Depends(get_current_user)
+):
+    project = session.get(Project,project_id)
+
+    if not project:
+        raise HTTPException(status_code=404,detail="Project not Found")
+    
+    if project.user_id != current_user.id:
+        raise HTTPException(status_code=403,detail="Not authorized to access this project")
+    
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400,detail="Only pdf files are allowed")
+    
+    safe_filename = f"proj_{project_id}_{file.filename}"
+    file_save_path = os.path.join(upload_dir,safe_filename)
+
+    try:
+        with open(file_save_path,"wb") as buffer:
+            contents = file.file.read()
+            buffer.write(contents)
+
+    except Exception as e:
+        raise HTTPException(status_code=500,detail=f"Failed to save file: {str(e)}")
+    
+    finally:
+        file.file.close()
+
+    return {
+        "message" : f"File `{file.filename}` uploaded successfully!",
+        "saved_path" : file_save_path,
+        "content_type" : file.content_type
+    }
+
