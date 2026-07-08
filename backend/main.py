@@ -218,3 +218,26 @@ def update_project(
         "message" : "Project updated successfully",
         "project" : project
     }
+
+@app.delete("/projects/{project_id}")
+def delete_project(
+    project_id : int,
+    session : Session = Depends(get_session),
+    current_user : User = Depends(get_current_user)
+):
+    
+    project = session.get(Project,project_id)
+
+    if not project:
+        raise HTTPException(status_code=404,detail="Project not found")
+    
+    if (project.user_id != current_user.id):
+        raise HTTPException(status_code=403,detail="Not Authorized to delete this project")
+    
+    session.delete(project)
+
+    session.commit()
+
+    return {
+        "message" : f"Project {project.name} has been successfully deleted"
+    }
