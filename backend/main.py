@@ -192,11 +192,29 @@ def get_projects(session : Session = Depends(get_session), current_user : User =
 
     return user_projects
 
+@app.put("/update/{project_id}")
+def update_project(
+    project_id : int,
+    updated_data : ProjectCreate,
+    session : Session = Depends(get_session),
+    current_user : User = Depends(get_current_user)
+):
+    project = session.get(Project,project_id)
+
+    if not project:
+        raise HTTPException(status_code=404,detail="Project not found")
     
+    if (project.user_id != current_user.id):
+        raise HTTPException(status_code=403,detail="Not authorized to update this project")
+    
+    project.name = updated_data.name
+    project.description = updated_data.description
 
+    session.add(project)
+    session.commit()
+    session.refresh(project)
 
-
-
-
-
-
+    return {
+        "message" : "Project updated successfully",
+        "project" : project
+    }
