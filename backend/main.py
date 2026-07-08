@@ -185,6 +185,16 @@ def create_project(
         "project" : new_project
     }
 
+@app.get("/projects")
+def get_projects(session : Session = Depends(get_session), current_user : User = Depends(get_current_user)):
+    statement = select(Project).where(Project.user_id == current_user.id)
+    user_projects = session.exec(statement).all()
+
+    return user_projects
+
+    
+
+
 
 
 
