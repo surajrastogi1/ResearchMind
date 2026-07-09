@@ -131,7 +131,7 @@ def generate_llm_answer(question : str, context_chunks: list[str]) -> str:
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents= user_prompt,
             config={"system_instruction" : system_prompt}
         )
@@ -183,6 +183,16 @@ class ProjectChunk(SQLModel,table=True):
     text_content : str
     embedding : str | None = Field(default=None)
     page_no : int | None = Field(default=None)
+
+    pdf_id : int = Field(foreign_key="project_pdfs.id")
+
+class ChatMessage(SQLModel,table=True):
+    __tablename__ = "chat_history"
+    
+    id:int = Field(default=None , primary_key=True)
+    sender : str = Field(index=True)
+    message_text : str
+    timestamp : datetime = Field(default_factory=datetime.utcnow)
 
     pdf_id : int = Field(foreign_key="project_pdfs.id")
 
@@ -612,6 +622,13 @@ def chat_with_pdf(
 
     ai_answer = generate_llm_answer(question, top_context_texts)
 
+    user_record = ChatMessage(sender="user",message_text=question,pdf_id=pdf_id)
+    ai_record = ChatMessage(sender="ai",message_text=ai_answer ,pdf_id=pdf_id)
+
+    session.add(user_record)
+    session.add(ai_record)
+    session.commit()
+
     return {
         "question": question,
         "answer": ai_answer,
@@ -626,3 +643,38 @@ def chat_with_pdf(
         ]
     }
    
+@app.get("/projects/{project_id}/pdfs/{pdf_id}/history")
+def get_chat_history(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project's history")
+
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+
+    messages = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.pdf_id == pdf_id)
+        .order_by(ChatMessage.timestamp.asc())
+    ).all()
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "total_messages": len(messages),
+        "history": [
+            {
+                "message_id": msg.id,
+                "sender": msg.sender,
+                "message_text": msg.message_text,
+                "timestamp": msg.timestamp.isoformat()
+            }
+            for msg in messages
+        ]
+    }
