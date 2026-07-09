@@ -111,7 +111,7 @@ def calculate_cosine_similarity(v1:list[float],v2:list[float]) -> float:
     
     return dot_product / (magnitude_v1*magnitude_v2)
 
-def generate_llm_answer(question : str, context_chunks: list[str]) -> str:
+def generate_llm_answer_with_memory(question : str, context_chunks: list[str],history_context: str) -> str:
     """Sends the question and retrieved document context to gemini to generate an answer"""
 
     api_key = os.getenv("GEMINI_API_Key")
@@ -122,12 +122,19 @@ def generate_llm_answer(question : str, context_chunks: list[str]) -> str:
     joined_context = "\n---\n".join(context_chunks)
 
     system_prompt = (
-        "You are a helpful AI Research Assistant. Use the provided background context "
-        "extracted from the document to answer the user's question accurately. "
-        "If the context doesn't contain the answer, politely state that you cannot find it in the document."
+        "You are a helpful AI Research Assistant. Use ONLY the provided background context "
+        "extracted from the document and the ongoing conversation history to answer the user's question accurately. "
+        "If the answer cannot be found within the provided background context, you must politely "
+        "state that the information is not available in the document. Do not use your own external knowledge."
     )
+    
 
-    user_prompt = f"Background Context:\n{joined_context}\n\nUser Question: {question}"
+    user_prompt = (
+        f"Background Context from Document:\n{joined_context}\n\n"
+        f"Recent Conversation History:\n{history_context}\n"
+        f"USER: {question}\n"
+        f"AI:"
+    )   
 
     try:
         response = client.models.generate_content(
@@ -620,7 +627,20 @@ def chat_with_pdf(
     top_context = ranked_chunks[:3]
     top_context_texts = [item[1] for item in top_context]
 
-    ai_answer = generate_llm_answer(question, top_context_texts)
+    past_messages = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.pdf_id == pdf_id)
+        .order_by(ChatMessage.timestamp.desc())
+        .limit(6)  # Grab the last 3 turns (3 user questions, 3 AI answers)
+    ).all()
+
+    past_messages.reverse()
+
+    history_context = ""
+    for msg in past_messages:
+        history_context += f"{msg.sender.upper()}: {msg.message_text}\n"
+
+    ai_answer = generate_llm_answer_with_memory(question, top_context_texts,history_context)
 
     user_record = ChatMessage(sender="user",message_text=question,pdf_id=pdf_id)
     ai_record = ChatMessage(sender="ai",message_text=ai_answer ,pdf_id=pdf_id)
