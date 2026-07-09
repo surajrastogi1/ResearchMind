@@ -539,3 +539,5 @@ def semantic_search_pdf(
         "query": query,
         "results": search_results[:limit]
     }
+
+
