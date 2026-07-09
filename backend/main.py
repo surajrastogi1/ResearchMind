@@ -4,10 +4,15 @@ from pydantic import EmailStr
 from datetime import datetime,timedelta,timezone
 from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 from pypdf import PdfReader
+from google import genai
+from dotenv import load_dotenv
 import bcrypt
 import jwt
 import os
 import re
+import json
+
+load_dotenv()
 
 upload_dir = "uploads"
 os.makedirs(upload_dir,exist_ok=True)
@@ -69,6 +74,26 @@ def chunk_text(text : str,chunk_size : int = 500,chunk_overlap:int = 50) -> list
 
     return chunks
 
+def generate_text_embedding(text: str) -> list[float]:
+    if not text:
+        return []
+        
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing from .env")
+        
+    # Initialize the client
+    client = genai.Client(api_key=api_key)
+    
+    try:
+        # Make sure this says client.models (PLURAL)
+        response = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text
+        )
+        return response.embeddings[0].values
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Google API Error: {str(e)}")
 
 class User(SQLModel,table=True):
 
@@ -111,6 +136,8 @@ class ProjectChunk(SQLModel,table=True):
     id : int = Field(default=None,primary_key=True)
     chunk_index : int = Field(index=True)
     text_content : str
+
+    embedding : str | None = Field(default=None)
 
     pdf_id : int = Field(foreign_key="project_pdfs.id")
 
@@ -399,9 +426,13 @@ def read_pdf(
 
     stored_chunks_response = []
     for index , chunk_payload in enumerate(text_chunks):
+
+        vector_list = generate_text_embedding(chunk_payload)
+
         db_chunk = ProjectChunk(
             chunk_index=index,
             text_content=chunk_payload,
+            embedding=json.dumps(vector_list),
             pdf_id=pdf_record.id
         )
         session.add(db_chunk)
@@ -432,3 +463,16 @@ def get_chunks(
     
     chunks = session.exec(select(ProjectChunk).where(ProjectChunk.pdf_id == pdf_id)).all()
     return chunks
+
+@app.post("/test-embedding")
+def test_embedding(text:str):
+    vector = generate_text_embedding(text)
+    if not vector:
+        raise HTTPException(status_code=500,detail="Failed to connect to Gemini API Key ")
+    
+    return {
+        "text_provided" : text,
+        "vector_dimensions" : len(vector),
+        "sample_vector_values" : vector[:5]
+    }
+
