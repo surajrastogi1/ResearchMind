@@ -11,6 +11,7 @@ import jwt
 import os
 import re
 import json
+import math
 
 load_dotenv()
 
@@ -94,6 +95,21 @@ def generate_text_embedding(text: str) -> list[float]:
         return response.embeddings[0].values
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Google API Error: {str(e)}")
+
+def calculate_cosine_similarity(v1:list[float],v2:list[float]) -> float:
+    """Calculate cosine similarity score b/w two numeric vectors"""
+
+    if not v1 or not v2 or (len(v1) != len(v2)):
+        return 0.0
+    
+    dot_product = sum(a * b for a, b in zip(v1, v2))
+    magnitude_v1 = math.sqrt(sum(a * a for a in v1))
+    magnitude_v2 = math.sqrt(sum(b * b for b in v2))
+
+    if magnitude_v1 == 0 or magnitude_v2 == 0:
+            return 0.0
+    
+    return dot_product / (magnitude_v1*magnitude_v2)
 
 class User(SQLModel,table=True):
 
@@ -476,3 +492,50 @@ def test_embedding(text:str):
         "sample_vector_values" : vector[:5]
     }
 
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/search")
+def semantic_search_pdf(
+    project_id : int,
+    pdf_id : int,
+    query : str,
+    limit : int = 3,
+    session : Session = Depends(get_session),
+    current_user : User = Depends(get_current_user)
+):
+    
+    project = session.get(Project,project_id)
+
+    if not project or (project.user_id != current_user.id):
+        raise HTTPException(status_code=403,detail="Not Authorized to access this project")
+    
+    query_vector = generate_text_embedding(query)
+
+    if not query_vector:
+        raise HTTPException(status_code=500,detail="Failed to generate embedding for the search query")
+    
+    chunks = session.exec(select(ProjectChunk).where(ProjectChunk.pdf_id == pdf_id)).all()
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail="No processed chunks found for this PDF.")
+    
+    search_results = []
+
+    for chunk in chunks:
+        if not chunk.embedding:
+            continue
+
+        chunk_vector = json.loads(chunk.embedding)
+        similarity_score = calculate_cosine_similarity(query_vector,chunk_vector)
+
+        search_results.append({
+            "chunk_id": chunk.id,
+            "chunk_index": chunk.chunk_index,
+            "text": chunk.text_content,
+            "similarity_score": similarity_score
+        })
+
+    search_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+
+    return {
+        "query": query,
+        "results": search_results[:limit]
+    }
