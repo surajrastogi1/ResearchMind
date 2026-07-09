@@ -111,6 +111,35 @@ def calculate_cosine_similarity(v1:list[float],v2:list[float]) -> float:
     
     return dot_product / (magnitude_v1*magnitude_v2)
 
+def generate_llm_answer(question : str, context_chunks: list[str]) -> str:
+    """Sends the question and retrieved document context to gemini to generate an answer"""
+
+    api_key = os.getenv("GEMINI_API_Key")
+    if not api_key:
+        raise HTTPException(status_code=500,detail="API Key is missing")
+    client = genai.Client(api_key=api_key)
+
+    joined_context = "\n---\n".join(context_chunks)
+
+    system_prompt = (
+        "You are a helpful AI Research Assistant. Use the provided background context "
+        "extracted from the document to answer the user's question accurately. "
+        "If the context doesn't contain the answer, politely state that you cannot find it in the document."
+    )
+
+    user_prompt = f"Background Context:\n{joined_context}\n\nUser Question: {question}"
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents= user_prompt,
+            config={"system_instruction" : system_prompt}
+        )
+        return response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM Generation Error: {str(e)}")
+
+
 class User(SQLModel,table=True):
 
     __tablename__ = "users"
@@ -540,4 +569,48 @@ def semantic_search_pdf(
         "results": search_results[:limit]
     }
 
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/chat")
+def chat_with_pdf(
+    project_id: int,
+    pdf_id: int,
+    question: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
+
+    query_vector = generate_text_embedding(question)
+    if not query_vector:
+        raise HTTPException(status_code=500, detail="Failed to vectorize question")
+    
+    chunks = session.exec(select(ProjectChunk).where(ProjectChunk.pdf_id == pdf_id)).all()
+    if not chunks:
+        raise HTTPException(status_code=404, detail="No chunks found. Process the PDF first.")
+    
+    ranked_chunks = []
+    for chunk in chunks:
+        if not chunk.embedding:
+            continue
+        chunk_vector = json.loads(chunk.embedding)
+        score = calculate_cosine_similarity(query_vector, chunk_vector)
+        ranked_chunks.append((score, chunk.text_content))
+
+    ranked_chunks.sort(key=lambda x: x[0], reverse=True)
+    top_context_texts = [text for score, text in ranked_chunks[:3]]
+
+    ai_answer = generate_llm_answer(question, top_context_texts)
+
+    return {
+        "question": question,
+        "answer": ai_answer,
+        "sources_used": len(top_context_texts),
+        "citations": [
+            {"index": i, "text_snippet": text[:150] + "..."} 
+            for i, text in enumerate(top_context_texts)
+        ]
+    }
+    
