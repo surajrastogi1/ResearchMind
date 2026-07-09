@@ -3,6 +3,7 @@ from sqlmodel import SQLModel,create_engine,Field,Session,select
 from pydantic import EmailStr
 from datetime import datetime,timedelta,timezone
 from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
+from pypdf import PdfReader
 import bcrypt
 import jwt
 import os
@@ -306,3 +307,45 @@ def upload_pdf(
         "content_type" : file.content_type
     }
 
+@app.get("/projects/{project_id}/pdfs/{pdf_id}/read")
+def read_pdf(
+    project_id : int,
+    pdf_id : int,
+    session : Session = Depends(get_session),
+    current_user : User = Depends(get_current_user)
+):
+    
+    project = session.get(Project,project_id)
+
+    if not project:
+        raise HTTPException(status_code=404,detail="Project Not found")
+    
+    if project.user_id != current_user.id:
+        raise HTTPException(status_code=403,detail="Not authorized to access the pdf")
+    
+    pdf_record = session.get(ProjectPDF,pdf_id)
+
+    if not pdf_record:
+        raise HTTPException(status_code=404,detail="PDF Record not found")
+    
+    if not os.path.exists(pdf_record.filepath):
+        raise HTTPException(status_code=404,detail="Physical pdf file missin in storage folder")
+    
+    try:
+        reader = PdfReader(pdf_record.filepath)
+        extracted_text = ""
+
+        for page_num,page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text:
+                extracted_text += f"--- Page {page_num + 1} ---\n{text}\n"
+
+    except Exception as e:
+        raise HTTPException(status_code=500,detail=f"Failed to parse  the pdf document: {str(e)}")
+    
+    return {
+        "pdf_id" : pdf_record.id,
+        "filename" : pdf_record.filename,
+        "total_pages" : len(reader.pages),
+        "content" : extracted_text
+    }
