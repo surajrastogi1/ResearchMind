@@ -131,7 +131,7 @@ def generate_llm_answer(question : str, context_chunks: list[str]) -> str:
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents= user_prompt,
             config={"system_instruction" : system_prompt}
         )
@@ -181,8 +181,8 @@ class ProjectChunk(SQLModel,table=True):
     id : int = Field(default=None,primary_key=True)
     chunk_index : int = Field(index=True)
     text_content : str
-
     embedding : str | None = Field(default=None)
+    page_no : int | None = Field(default=None)
 
     pdf_id : int = Field(foreign_key="project_pdfs.id")
 
@@ -453,45 +453,52 @@ def read_pdf(
     
     try:
         reader = PdfReader(pdf_record.filepath)
-        extracted_text = ""
+        stored_chunks_response = []
+        chunk_counter = 0
 
         for page_num,page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                extracted_text += f"--- Page {page_num + 1} ---\n{text}\n"
+            raw_page_text = page.extract_text()
+            if not raw_page_text:
+                continue
 
-    except Exception as e:
-        raise HTTPException(status_code=500,detail=f"Failed to parse  the pdf document: {str(e)}")
-    
-    cleaned_text = clean_extracted_text(extracted_text)
-    if not cleaned_text:
+            cleaned_page_text = clean_extracted_text(raw_page_text)
+            if not cleaned_page_text:
+                continue
+
+            page_chunks = chunk_text(cleaned_page_text,chunk_size=500,chunk_overlap=50)
+            
+            for chunk_payload in page_chunks:
+                vector_list = generate_text_embedding(chunk_payload)
+
+                db_chunk = ProjectChunk(
+                        chunk_index=chunk_counter,
+                        text_content=chunk_payload,
+                        embedding=json.dumps(vector_list),
+                        page_no= page_num + 1,  # Saves Page 1, Page 2, etc.
+                        pdf_id=pdf_record.id
+                    )
+                
+                session.add(db_chunk)
+                stored_chunks_response.append(db_chunk)
+                chunk_counter+=1
+
+        if not stored_chunks_response:
             raise HTTPException(status_code=400, detail="The PDF contains no readable text extract.")
-    
-    text_chunks = chunk_text(cleaned_text,chunk_size=500,chunk_overlap=50)
+        
+        session.commit()
 
-    stored_chunks_response = []
-    for index , chunk_payload in enumerate(text_chunks):
-
-        vector_list = generate_text_embedding(chunk_payload)
-
-        db_chunk = ProjectChunk(
-            chunk_index=index,
-            text_content=chunk_payload,
-            embedding=json.dumps(vector_list),
-            pdf_id=pdf_record.id
-        )
-        session.add(db_chunk)
-        stored_chunks_response.append(db_chunk)
-
-    session.commit()
+    except HTTPException:
+        raise HTTPException(status_code=400, detail="The PDF contains no readable text extract.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse the pdf document: {str(e)}")
     
     return {
-        "message": "PDF Parsed, split , chunked database records generated successfully!",
-        "pdf_id" : pdf_record.id,
-        "filename" : pdf_record.filename,
-        "total_pages" : len(reader.pages),
+        "message": "PDF Parsed, split, chunked and database records generated successfully!",
+        "pdf_id": pdf_record.id,
+        "filename": pdf_record.filename,
+        "total_pages": len(reader.pages),
         "total_chunks_created": len(stored_chunks_response),
-        "chunks": stored_chunks_response
+        "chunks": [ {"index": c.chunk_index, "page": c.page_no, "text": c.text_content[:100] + "..."} for c in stored_chunks_response ]
     }
 
 @app.get("/projects/{project_id}/pdfs/{pdf_id}/chunks")
@@ -597,10 +604,11 @@ def chat_with_pdf(
             continue
         chunk_vector = json.loads(chunk.embedding)
         score = calculate_cosine_similarity(query_vector, chunk_vector)
-        ranked_chunks.append((score, chunk.text_content))
+        ranked_chunks.append((score, chunk.text_content, chunk.page_no))
 
     ranked_chunks.sort(key=lambda x: x[0], reverse=True)
-    top_context_texts = [text for score, text in ranked_chunks[:3]]
+    top_context = ranked_chunks[:3]
+    top_context_texts = [item[1] for item in top_context]
 
     ai_answer = generate_llm_answer(question, top_context_texts)
 
@@ -609,8 +617,12 @@ def chat_with_pdf(
         "answer": ai_answer,
         "sources_used": len(top_context_texts),
         "citations": [
-            {"index": i, "text_snippet": text[:150] + "..."} 
-            for i, text in enumerate(top_context_texts)
+            {
+                "index": i, 
+                "page": item[2], 
+                "text_snippet": item[1][:150] + "..."
+            } 
+            for i, item in enumerate(top_context)
         ]
     }
-    
+   
