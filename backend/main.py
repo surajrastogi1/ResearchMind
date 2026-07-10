@@ -244,6 +244,42 @@ def generate_pdf_flashcards(filename: str, context_chunks: list[str]) -> list[di
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Flashcard Generation Error: {str(e)}")
 
+def generate_pdf_quiz(filename: str, context_chunks: list[str]) -> list[dict]:
+    """Analyzes text chunks and yields an array of structured multiple-choice quiz questions."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+    
+    full_text = "\n".join(context_chunks[:25])
+    
+    system_prompt = (
+        "You are an expert examiner. Read the provided document content and construct a high-quality "
+        "multiple-choice assessment quiz based strictly on the material.\n\n"
+        "CRITICAL: You must return your response in raw JSON format matching this schema layout:\n"
+        "[\n"
+        "  {\n"
+        "    \"question\": \"The explicit question string here...\",\n"
+        "    \"options\": [\"Option A\", \"Option B\", \"Option C\", \"Option D\"],\n"
+        "    \"correct_option_index\": 0\n"
+        "  }\n"
+        "]\n"
+        "Note: 'correct_option_index' must be a 0-indexed integer (0 for Option A, 1 for Option B, etc.). "
+        "Generate exactly 5 distinct conceptual questions."
+    )
+    
+    user_prompt = f"Document Filename: {filename}\n\nSource Content:\n{full_text}"
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json"
+            }
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quiz Generation Error: {str(e)}")
+
 class User(SQLModel,table=True):
 
     __tablename__ = "users"
@@ -900,4 +936,41 @@ def get_pdf_flashcards(
         "filename": pdf_record.filename,
         "count": len(flashcards_list),
         "flashcards": flashcards_list
+    }
+
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/quiz")
+def get_pdf_quiz(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Project Authorization Check
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    # 2. PDF Validity Check
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+    
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+        .order_by(ProjectChunk.id.asc())
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No text content found. Run /read first.")
+
+    chunk_texts = [c.text_content for c in chunks]
+
+    quiz_questions = generate_pdf_quiz(pdf_record.filename, chunk_texts)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "total_questions": len(quiz_questions),
+        "quiz": quiz_questions
     }
