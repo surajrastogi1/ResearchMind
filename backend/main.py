@@ -155,6 +155,33 @@ def generate_llm_answer_with_memory(question : str, context_chunks: list[str],hi
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM Generation Error: {str(e)}")
 
+def generate_pdf_summary(filename : str,context_chunks : list[str]) ->  str:
+    """Combines core document chunks and sends them to Gemini to generate a structured summary."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+
+    full_text = "\n".join(context_chunks[:25])
+
+    system_prompt = (
+        "You are an expert Research Analyst. Your job is to read the provided text from a document "
+        "and generate a highly accurate, professional, comprehensive executive summary.\n\n"
+        "Format your response using clean Markdown with the following distinct sections:\n"
+        "## 📑 Executive Summary\n"
+        "## 🔑 Key Takeaways (Bullet points)\n"
+        "## 🎯 Target Audience / Core Subject\n\n"
+        "Do not hallucinate. Base your summary strictly on the text provided."
+    )
+    user_prompt = f"Document Filename: {filename}\n\nDocument Text Content:\n{full_text}"
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={"system_instruction": system_prompt}
+        )
+        return response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Summary Generation Error: {str(e)}")
+
 
 class User(SQLModel,table=True):
 
@@ -710,3 +737,38 @@ def get_chat_history(
             for msg in messages
         ]
     }
+
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/summary")
+def get_pdf_summary(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+    
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+    
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+        .order_by(ProjectChunk.id.asc())
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No processed text content found for this PDF.")
+    
+    chunk_texts = [c.text_content for c in chunks]
+    summary_markdown = generate_pdf_summary(pdf_record.filename, chunk_texts)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "summary": summary_markdown
+    }
+
+
