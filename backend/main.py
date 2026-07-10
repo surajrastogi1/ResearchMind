@@ -111,7 +111,7 @@ def calculate_cosine_similarity(v1:list[float],v2:list[float]) -> float:
     
     return dot_product / (magnitude_v1*magnitude_v2)
 
-def generate_llm_answer_with_memory(question : str, context_chunks: list[str],history_context: str) -> str:
+def generate_llm_answer_with_memory(question : str, context_chunks: list[str],history_context: str) -> dict:
     """Sends the question and retrieved document context to gemini to generate an answer"""
 
     api_key = os.getenv("GEMINI_API_Key")
@@ -123,9 +123,18 @@ def generate_llm_answer_with_memory(question : str, context_chunks: list[str],hi
 
     system_prompt = (
         "You are a helpful AI Research Assistant. Use ONLY the provided background context "
-        "extracted from the document and the ongoing conversation history to answer the user's question accurately. "
-        "If the answer cannot be found within the provided background context, you must politely "
-        "state that the information is not available in the document. Do not use your own external knowledge."
+        "extracted from the document and the ongoing conversation history to answer the user's question accurately.\n\n"
+        "CRITICAL: You must return your response in raw JSON format matching this schema:\n"
+        "{\n"
+        "  \"answer\": \"Your detailed answer string here...\",\n"
+        "  \"suggested_followups\": [\n"
+        "    \"Follow-up question 1?\",\n"
+        "    \"Follow-up question 2?\",\n"
+        "    \"Follow-up question 3?\"\n"
+        "  ]\n"
+        "}\n"
+        "If the answer cannot be found within the provided context, state that the information is not available "
+        "in the 'answer' key, and leave 'suggested_followups' as an empty list."
     )
     
 
@@ -140,9 +149,9 @@ def generate_llm_answer_with_memory(question : str, context_chunks: list[str],hi
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents= user_prompt,
-            config={"system_instruction" : system_prompt}
+            config={"system_instruction" : system_prompt,"response_mime_type": "application/json"}
         )
-        return response.text
+        return json.loads(response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM Generation Error: {str(e)}")
 
@@ -640,7 +649,9 @@ def chat_with_pdf(
     for msg in past_messages:
         history_context += f"{msg.sender.upper()}: {msg.message_text}\n"
 
-    ai_answer = generate_llm_answer_with_memory(question, top_context_texts,history_context)
+    llm_output = generate_llm_answer_with_memory(question, top_context_texts, history_context)
+    ai_answer = llm_output.get("answer", "")
+    suggested_followups = llm_output.get("suggested_followups", [])
 
     user_record = ChatMessage(sender="user",message_text=question,pdf_id=pdf_id)
     ai_record = ChatMessage(sender="ai",message_text=ai_answer ,pdf_id=pdf_id)
@@ -653,6 +664,7 @@ def chat_with_pdf(
         "question": question,
         "answer": ai_answer,
         "sources_used": len(top_context_texts),
+        "suggested_followups" : suggested_followups,
         "citations": [
             {
                 "index": i, 
