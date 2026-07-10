@@ -182,6 +182,33 @@ def generate_pdf_summary(filename : str,context_chunks : list[str]) ->  str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Summary Generation Error: {str(e)}")
 
+def generate_pdf_notes(filename: str, context_chunks: list[str]) -> str:
+    """Analyzes document chunks to build comprehensive study notes in Markdown format."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+    full_text = "\n".join(context_chunks[:25])
+    
+    system_prompt = (
+        "You are an elite academic tutor. Read the provided document text and create "
+        "comprehensive, deeply structured study notes.\n\n"
+        "Format your output in clean Markdown using these guidelines:\n"
+        "- Use clear headings (`##`, `###`) for major topics\n"
+        "- **Bold** crucial terminology and core concepts upon first mention\n"
+        "- Use bulleted lists to break down complex processes or mechanics\n"
+        "- Include a '💡 Deep Dive' blockquote for the most critical insight\n\n"
+        "Ensure your notes are highly instructional and stick strictly to the facts provided."
+    )
+
+    user_prompt = f"Document Filename: {filename}\n\nSource Content:\n{full_text}"
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={"system_instruction": system_prompt}
+        )
+        return response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Notes Generation Error: {str(e)}")
 
 class User(SQLModel,table=True):
 
@@ -771,4 +798,37 @@ def get_pdf_summary(
         "summary": summary_markdown
     }
 
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/notes")
+def get_pdf_notes(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+    
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+        .order_by(ProjectChunk.id.asc())
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No processed text content found. Run /read first.")
+
+    chunk_texts = [c.text_content for c in chunks]
+
+    notes_markdown = generate_pdf_notes(pdf_record.filename, chunk_texts)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "study_notes": notes_markdown
+    }
 
