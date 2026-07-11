@@ -1095,3 +1095,47 @@ def get_pdf_keywords(
         "keywords": keywords_data
     }
 
+@app.get("/projects/{project_id}/pdfs/{pdf_id}/reading-time")
+def get_pdf_reading_time(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No text data found. Please run /read first.")
+
+    total_words = sum(len(chunk.text_content.split()) for chunk in chunks)
+
+    minutes_average = round(total_words / 200, 1)
+    minutes_fast = round(total_words / 300, 1)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "word_count_pool": total_words,
+        "estimated_reading_time": {
+            "average_reader": f"{minutes_average} minutes",
+            "fast_reader": f"{minutes_fast} minutes",
+            "wpm_benchmarks": {
+                "standard_pace": "200 wpm",
+                "accelerated_pace": "300 wpm"
+            }
+        }
+    }
+
+
