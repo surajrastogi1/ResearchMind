@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 from pypdf import PdfReader
 from google import genai
 from dotenv import load_dotenv
+import google.genai as genai
 import bcrypt
 import jwt
 import os
@@ -383,6 +384,42 @@ def cluster_project_documents(pdf_list: list[dict]) -> dict:
         return json.loads(response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clustering Error: {str(e)}")
+
+def generate_pdf_recommendations(target_pdf: dict, other_pdfs: list[dict]) -> list[dict]:
+    """Uses gemini-2.5-flash to discover contextually similar documents within the same project."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+    
+    system_prompt = (
+        "You are an AI Recommendation Engine. Analyze the target document details and compare "
+        "them against the alternative list of project documents to find the most contextually relevant matches.\n\n"
+        "CRITICAL: You must return your response in raw JSON format matching this schema layout:\n"
+        "[\n"
+        "  {\n"
+        "    \"pdf_id\": 2,\n"
+        "    \"filename\": \"seo_guide.pdf\",\n"
+        "    \"similarity_reasoning\": \"A short 1-sentence explanation of how this document relates to the target topic.\"\n"
+        "  }\n"
+        "]\n"
+        "Return up to 3 recommendation objects, sorted from highest relevance to lowest. If no good match exists, return an empty array."
+    )
+    
+    user_prompt = (
+        f"Target Document:\n{json.dumps(target_pdf, indent=2)}\n\n"
+        f"Available Documents to Recommend from:\n{json.dumps(other_pdfs, indent=2)}"
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",  
+            contents=user_prompt,
+            config={
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json"
+            }
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recommendation Error: {str(e)}")
 
 class User(SQLModel,table=True):
 
@@ -1277,5 +1314,51 @@ def get_project_document_clusters(
         "project_id": project_id,
         "total_documents_analyzed": len(pdfs),
         "results": clustering_results
+    }
+
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/recommendations")
+def get_pdf_recommendations(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    target_pdf_record = session.get(ProjectPDF, pdf_id)
+    if not target_pdf_record or target_pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Target PDF record not found in this project")
+
+    all_pdfs = session.exec(
+        select(ProjectPDF).where(ProjectPDF.project_id == project_id)
+    ).all()
+
+    other_pdfs_list = []
+    target_pdf_data = {"pdf_id": target_pdf_record.id, "filename": target_pdf_record.filename}
+
+    for pdf in all_pdfs:
+        if pdf.id != pdf_id:
+            other_pdfs_list.append({
+                "pdf_id": pdf.id,
+                "filename": pdf.filename
+            })
+
+    if not other_pdfs_list:
+        return {
+            "target_pdf_id": pdf_id,
+            "recommendations": [],
+            "message": "No other documents exist in this project to recommend against."
+        }
+
+    # 4. Fetch structural suggestions from gemini-2.5-flash
+    recommendations = generate_pdf_recommendations(target_pdf_data, other_pdfs_list)
+
+    return {
+        "target_pdf_id": pdf_id,
+        "filename": target_pdf_record.filename,
+        "recommendations": recommendations
     }
 
