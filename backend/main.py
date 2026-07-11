@@ -315,6 +315,39 @@ def extract_pdf_keywords(filename: str, context_chunks: list[str]) -> list[dict]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Keyword Extraction Error: {str(e)}")
 
+def classify_pdf_topic(filename: str, context_chunks: list[str]) -> dict:
+    """Analyzes text chunks to determine the primary industry/academic category of the document."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+    
+    full_text = "\n".join(context_chunks[:25])
+    
+    system_prompt = (
+        "You are an advanced Text Classification Model. Analyze the provided document text "
+        "and determine its primary domain category.\n\n"
+        "CRITICAL: You must return your response in raw JSON format matching this schema:\n"
+        "{\n"
+        "  \"primary_topic\": \"The main category name (e.g., Technology, Finance, Legal, Health, Education, etc...)\",\n"
+        "  \"confidence_score\": 0.92,\n"
+        "  \"reasoning\": \"A short 1-sentence explanation of why the document falls under this topic classification.\"\n"
+        "}\n"
+        "Note: 'confidence_score' must be a float between 0.00 and 1.00."
+    )
+    
+    user_prompt = f"Document Filename: {filename}\n\nContent Pool:\n{full_text}"
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json"
+            }
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Topic Classification Error: {str(e)}")
+
 class User(SQLModel,table=True):
 
     __tablename__ = "users"
@@ -1136,6 +1169,42 @@ def get_pdf_reading_time(
                 "accelerated_pace": "300 wpm"
             }
         }
+    }
+
+@app.post("/projects/{project_id}/pdfs/{pdf_id}/classify")
+def get_pdf_topic_classification(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+
+    
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+        .order_by(ProjectChunk.id.asc())
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No text content found. Run /read first.")
+
+    chunk_texts = [c.text_content for c in chunks]
+
+    classification_results = classify_pdf_topic(pdf_record.filename, chunk_texts)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "classification": classification_results
     }
 
 
