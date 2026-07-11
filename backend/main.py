@@ -945,12 +945,10 @@ def get_pdf_quiz(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ):
-    # 1. Project Authorization Check
     project = session.get(Project, project_id)
     if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
-    # 2. PDF Validity Check
     pdf_record = session.get(ProjectPDF, pdf_id)
     if not pdf_record or pdf_record.project_id != project_id:
         raise HTTPException(status_code=404, detail="PDF record not found in this project")
@@ -973,4 +971,54 @@ def get_pdf_quiz(
         "filename": pdf_record.filename,
         "total_questions": len(quiz_questions),
         "quiz": quiz_questions
+    }
+
+@app.get("/projects/{project_id}/pdfs/{pdf_id}/stats")
+def get_pdf_statistics(
+    project_id: int,
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    pdf_record = session.get(ProjectPDF, pdf_id)
+    if not pdf_record or pdf_record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="PDF record not found in this project")
+
+
+    chunks = session.exec(
+        select(ProjectChunk)
+        .where(ProjectChunk.pdf_id == pdf_id)
+    ).all()
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No text content found. Please run /read first.")
+
+
+    total_chunks = len(chunks)
+    total_characters = 0
+    total_words = 0
+    total_paragraphs = 0
+
+    for chunk in chunks:
+        text = chunk.text_content
+        total_characters += len(text)
+        total_words += len(text.split())
+        
+        paragraphs = [p for p in text.split("\n") if p.strip()]
+        total_paragraphs += len(paragraphs)
+
+    return {
+        "pdf_id": pdf_id,
+        "filename": pdf_record.filename,
+        "metrics": {
+            "total_chunks": total_chunks,
+            "total_characters": total_characters,
+            "total_words": total_words,
+            "estimated_paragraphs": total_paragraphs
+        }
     }
