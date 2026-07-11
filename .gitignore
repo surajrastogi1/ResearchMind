@@ -1,4 +1,5 @@
 .venv
 database.db
-uploads/
+app/uploads/
 .env
+temp.py
