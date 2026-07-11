@@ -13,6 +13,7 @@ import re
 import json
 import math
 
+
 load_dotenv()
 
 upload_dir = "uploads"
@@ -347,6 +348,41 @@ def classify_pdf_topic(filename: str, context_chunks: list[str]) -> dict:
         return json.loads(response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Topic Classification Error: {str(e)}")
+
+def cluster_project_documents(pdf_list: list[dict]) -> dict:
+    """Analyzes a list of PDFs and their metadata to group them into clusters."""
+    client = genai.Client(api_key=os.getenv("GEMINI_API_Key"))
+    
+    system_prompt = (
+        "You are a Machine Learning Data Engineer. Your task is to perform text clustering "
+        "on the list of provided project documents.\n\n"
+        "CRITICAL: Return a raw JSON object matching this schema:\n"
+        "{\n"
+        "  \"clusters\": [\n"
+        "    {\n"
+        "      \"cluster_id\": 0,\n"
+        "      \"cluster_name\": \"Marketing & Branding\",\n"
+        "      \"pdf_ids\": [1, 4]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Group similar documents together based on their titles and contents. Every PDF must belong to a cluster."
+    )
+    
+    user_prompt = f"Documents to cluster:\n{json.dumps(pdf_list, indent=2)}"
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json"
+            }
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clustering Error: {str(e)}")
 
 class User(SQLModel,table=True):
 
@@ -1207,4 +1243,39 @@ def get_pdf_topic_classification(
         "classification": classification_results
     }
 
+@app.post("/projects/{project_id}/cluster")
+def get_project_document_clusters(
+    project_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Project Authorization Check
+    project = session.get(Project, project_id)
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    # 2. Pull all PDFs inside this specific project
+    pdfs = session.exec(
+        select(ProjectPDF).where(ProjectPDF.project_id == project_id)
+    ).all()
+
+    if len(pdfs) < 1:
+        raise HTTPException(status_code=400, detail="Need at least 1 document in the project to run clustering.")
+
+    # 3. Format the document summaries/metadata list for the AI
+    pdf_list = []
+    for pdf in pdfs:
+        pdf_list.append({
+            "pdf_id": pdf.id,
+            "filename": pdf.filename
+        })
+
+    # 4. Generate the groupings
+    clustering_results = cluster_project_documents(pdf_list)
+
+    return {
+        "project_id": project_id,
+        "total_documents_analyzed": len(pdfs),
+        "results": clustering_results
+    }
 
