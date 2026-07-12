@@ -3,4 +3,4 @@ database.db
 app/uploads/
 .env
 temp.py
-__pycache__
+__pycache__/
