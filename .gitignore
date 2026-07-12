@@ -6,3 +6,5 @@ temp.py
 app/__pycache__/
 app/routers/__pycache__/
 app/utils/__pycache__/
+__pycache__/
+*.pyc
