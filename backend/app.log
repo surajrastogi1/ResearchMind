@@ -1,0 +1,2 @@
+2026-07-14 10:12:03,537 - INFO - [auth.py:13] - Registration attempt initiated for username: 'g' (Email: usewdddsr@example.com)
+2026-07-14 10:12:04,099 - INFO - [auth.py:33] - User 'g' created successfully with user_id: 2

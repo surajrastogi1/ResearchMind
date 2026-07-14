@@ -1,0 +1,53 @@
+name: Python Application CI & Docker Push
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # 🧪 JOB 1: Test the code
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+
+    - name: Run Tests with Pytest
+      env:
+        PYTHONPATH: backend
+        GEMINI_API_KEY: "fake_key_for_testing"
+      run: |
+        pytest backend/tests/ -v -W ignore
+
+  # 🐳 JOB 2: Build & Push Docker Image (Only runs if Job 1 succeeds!)
+  push-to-registry:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Log into Docker Hub using your secure repo secrets
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # Build and push the image using the official Docker action
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend      # Points to where your Dockerfile lives
+        push: true
+        tags: ${{ secrets.DOCKER_USERNAME }}/researchmind-backend:latest

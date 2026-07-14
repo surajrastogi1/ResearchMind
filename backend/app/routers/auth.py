@@ -4,27 +4,41 @@ from sqlmodel import Session, select
 from app.database import get_session
 from app.models import User, UserCreate
 from app.security import get_password_hash, verify_password, create_access_tokens, get_current_user
+from app.utils.logger import logger
 
 router = APIRouter(tags=["Authentication"])
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(user_data: UserCreate, session: Session = Depends(get_session)):
+    logger.info(f"Registration attempt initiated for username: '{user_data.username}' (Email: {user_data.email})")
 
     if session.exec(select(User).where(User.username == user_data.username)).first():
+        logger.warning(f"Registration failed: Username '{user_data.username}' is already taken.")
         raise HTTPException(status_code=400, detail="Username already exists")
+
     if session.exec(select(User).where(User.email == user_data.email)).first():
+        logger.warning(f"Registration failed: Email '{user_data.email}' is already registered.")
         raise HTTPException(status_code=400, detail="Email already exists")
     
-    secured_hash_password = get_password_hash(user_data.password)
-    new_user = User(
-        username=user_data.username,
-        email=user_data.email,
-        hashed_password=secured_hash_password
-    )
-    session.add(new_user)
-    session.commit()
-    session.refresh(new_user)
-    return {"message": "User Registered Successfully!", "user_id": new_user.id}
+    try:
+        secured_hash_password = get_password_hash(user_data.password)
+        new_user = User(
+            username=user_data.username,
+            email=user_data.email,
+            hashed_password=secured_hash_password
+        )
+        session.add(new_user)
+        session.commit()
+        session.refresh(new_user)
+        logger.info(f"User '{user_data.username}' created successfully with user_id: {new_user.id}")
+        return {"message": "User Registered Successfully!", "user_id": new_user.id}
+    
+    except Exception as e:
+        
+        logger.error(f"Critical error during registration for '{user_data.username}': {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
 
 @router.post("/login")
 def login(login_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
