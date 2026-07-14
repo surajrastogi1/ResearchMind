@@ -20,6 +20,8 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
+        # 🎯 FORCE INSTALL PYTEST TO PREVENT COMMAND NOT FOUND ERRORS
+        pip install pytest pytest-mock
         if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
 
     - name: Run Tests with Pytest
